@@ -1,105 +1,101 @@
-export async function onRequest(context) {
+export async function onRequest(context){
   const { request, env } = context;
   const url = new URL(request.url);
-  const path = url.pathname.replace('/api/','');
-  const DB = env.DB;
+  const route = url.pathname.replace('/api/','');
 
-  if (request.method === 'OPTIONS') return new Response('', { headers: cors() });
-
-  let userId = url.searchParams.get('user_id') || '1';
-  let username = url.searchParams.get('username') || 'player';
-  let lang = url.searchParams.get('lang') || 'en';
-  const now = Date.now();
-
-  if (path.startsWith('game')) {
-    let user = await DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
-    if (!user) {
-      await DB.prepare('INSERT INTO users(id,username,lang,coins) VALUES(?,?,?,100)').bind(userId, username, lang).run();
-      user = await DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
-    }
-    const plots = await DB.prepare('SELECT * FROM plots WHERE user_id=?').bind(userId).all();
-    const settings = await DB.prepare('SELECT * FROM settings').all();
-    const tasks = await DB.prepare('SELECT * FROM tasks').all();
-    return json({
-      user,
-      plots: plots.results,
-      settings: settings.results,
-      tasks: tasks.results,
-      wallet: env.OWNER_WALLET || 'UQA7QBgeXOQldcirB1fWYLr8SRF-3ZVpZliYVNcWp-hmqx4R',
-      serverTime: now
-    });
+  // CORS
+  if(request.method==='OPTIONS'){
+    return new Response('',{headers:{
+      'Access-Control-Allow-Origin':'*',
+      'Access-Control-Allow-Methods':'POST, OPTIONS',
+      'Access-Control-Allow-Headers':'Content-Type'
+    }});
   }
 
-  if (path.startsWith('action') && request.method === 'POST') {
-    const body = await request.json();
+  let body={};
+  try{ body = await request.json(); }catch(e){}
 
-    if (body.type === 'plant') {
-      await DB.prepare('INSERT OR REPLACE INTO plots(user_id,plot_id,crop,planted_at) VALUES(?,?,?,?)')
-       .bind(userId, body.plot_id, body.crop || 'wheat', now).run();
+  const userId = String(body.userId || '0');
+  const username = body.username || 'guest';
+
+  // Ensure tables exist
+  try{
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT,
+      coins INTEGER DEFAULT 100,
+      energy INTEGER DEFAULT 100,
+      protection_until INTEGER DEFAULT 0,
+      created_at INTEGER
+    )`).run();
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS plots (
+      user_id TEXT,
+      plot_index INTEGER,
+      type TEXT DEFAULT 'empty',
+      planted_at INTEGER,
+      PRIMARY KEY(user_id, plot_index)
+    )`).run();
+  }catch(e){}
+
+  // Get or create user
+  let user = await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(userId).first();
+  if(!user){
+    await env.DB.prepare('INSERT INTO users (id, username, coins, energy, protection_until, created_at) VALUES (?,?,?,?,?,?)')
+      .bind(userId, username, 100, 100, Date.now()+4*3600*1000, Date.now()).run();
+    user = {id:userId, username, coins:100, energy:100, protection_until:Date.now()+4*3600*1000};
+    // init 9 plots
+    for(let i=0;i<9;i++){
+      await env.DB.prepare('INSERT OR IGNORE INTO plots (user_id, plot_index, type) VALUES (?,?,?)').bind(userId,i,'empty').run();
     }
-
-    if (body.type === 'harvest') {
-      const plot = await DB.prepare('SELECT * FROM plots WHERE user_id=? AND plot_id=?').bind(userId, body.plot_id).first();
-      if(plot && now - plot.planted_at > 60000){ // دقيقة واحدة للتجربة، خليها 600000 = 10 دقائق
-        await DB.prepare('DELETE FROM plots WHERE user_id=? AND plot_id=?').bind(userId, body.plot_id).run();
-        await DB.prepare('UPDATE users SET coins=coins+10 WHERE id=?').bind(userId).run();
-      }
-    }
-
-    if (body.type === 'steal') {
-      const targetId = body.target_id;
-      const target = await DB.prepare('SELECT protection_until FROM users WHERE id=?').bind(targetId).first();
-      if(target && target.protection_until > now){
-        return json({ error: 'protected', until: target.protection_until }, 403);
-      }
-      // اسرق حفرة عشوائية
-      const targetPlots = await DB.prepare('SELECT * FROM plots WHERE user_id=?').bind(targetId).all();
-      if(targetPlots.results.length > 0){
-        const stealPlot = targetPlots.results[0];
-        await DB.prepare('DELETE FROM plots WHERE user_id=? AND plot_id=?').bind(targetId, stealPlot.plot_id).run();
-        await DB.prepare('UPDATE users SET coins=coins+8 WHERE id=?').bind(userId).run();
-      }
-    }
-
-    if (body.type === 'protect') {
-      await DB.prepare('UPDATE users SET protection_until=? WHERE id=?').bind(now + 4*3600*1000, userId).run();
-    }
-
-    return json({ ok: true });
   }
 
-  // admin
-  if (path.startsWith('admin')) {
-    const key = url.searchParams.get('key');
-    if (key!== 'admin73') return json({ error: 'unauthorized' }, 401);
-    if (path.includes('settings') && request.method === 'POST') {
-      const body = await request.json();
-      for (const k in body) {
-        await DB.prepare('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)').bind(k, String(body[k])).run();
-      }
-      return json({ ok: true });
-    }
-    if (path.includes('tasks') && request.method === 'POST') {
-      const body = await request.json();
-      await DB.prepare('INSERT INTO tasks(title_en,title_ar,link,reward,type) VALUES(?,?,?,?,?)')
-       .bind(body.title_en, body.title_ar, body.link, body.reward, body.type).run();
-      return json({ ok: true });
-    }
-    const stats = await DB.prepare('SELECT COUNT(*) as users, SUM(coins) as totalCoins FROM users').first();
-    const allPlots = await DB.prepare('SELECT COUNT(*) as total FROM plots').first();
-    return json({ stats, allPlots });
+  const json = (obj)=> new Response(JSON.stringify(obj),{headers:{'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}});
+
+  if(route==='init'){
+    return json({ok:true, user});
   }
 
-  return json({ error: 'not found' }, 404);
-}
+  if(route==='farm'){
+    const rows = await env.DB.prepare('SELECT * FROM plots WHERE user_id=? ORDER BY plot_index').bind(userId).all();
+    let plots = rows.results || [];
+    const now = Date.now();
+    // auto-grow: after 30 sec -> ready (for demo, in real game 2-5 min)
+    for(let p of plots){
+      if(p.type==='growing' && now - p.planted_at > 30000){
+        await env.DB.prepare('UPDATE plots SET type=? WHERE user_id=? AND plot_index=?').bind('ready', userId, p.plot_index).run();
+        p.type='ready';
+      }
+    }
+    return json({coins:user.coins, energy:user.energy, plots});
+  }
 
-function json(data, status=200) {
-  return new Response(JSON.stringify(data), { status, headers: { 'Content-Type':'application/json',...cors() } });
-}
-function cors() {
-  return {
-    'Access-Control-Allow-Origin':'*',
-    'Access-Control-Allow-Methods':'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers':'Content-Type'
-  };
+  if(route==='plant'){
+    if(user.energy < 10) return json({error:'الطاقة غير كافية، شاهد إعلان'});
+    const idx = body.plot;
+    const plot = await env.DB.prepare('SELECT * FROM plots WHERE user_id=? AND plot_index=?').bind(userId, idx).first();
+    if(!plot || plot.type!=='empty') return json({error:'الأرض غير فارغة'});
+    await env.DB.prepare('UPDATE plots SET type=?, planted_at=? WHERE user_id=? AND plot_index=?').bind('growing', Date.now(), userId, idx).run();
+    await env.DB.prepare('UPDATE users SET energy=energy-10 WHERE id=?').bind(userId).run();
+    return json({ok:true});
+  }
+
+  if(route==='harvest'){
+    const idx = body.plot;
+    const plot = await env.DB.prepare('SELECT * FROM plots WHERE user_id=? AND plot_index=?').bind(userId, idx).first();
+    if(!plot || plot.type!=='ready') return json({error:'غير جاهز'});
+    await env.DB.prepare('UPDATE plots SET type=?, planted_at=NULL WHERE user_id=? AND plot_index=?').bind('empty', userId, idx).run();
+    await env.DB.prepare('UPDATE users SET coins=coins+20 WHERE id=?').bind(userId).run();
+    return json({ok:true});
+  }
+
+  if(route==='reward' || route==='adsgram'){
+    const amount = parseInt(body.amount||20);
+    // Handle Adsgram server callback: /api/adsgram?userId=[userId]
+    const urlUserId = url.searchParams.get('userId');
+    const targetId = urlUserId || userId;
+    await env.DB.prepare('UPDATE users SET energy=energy+? WHERE id=?').bind(amount, targetId).run();
+    return json({ok:true, rewarded:amount, user:targetId});
+  }
+
+  return json({error:'unknown route '+route});
 }
