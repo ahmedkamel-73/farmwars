@@ -1,0 +1,18 @@
+
+name = "farm-wars"
+type = "javascript"
+pages_build_output_dir = "."
+
+[env.production]
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "farm_wars_db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+
+[vars]
+BOT_USERNAME = "farmwarsgamebot"
+OWNER_WALLET = "UQA7QBgeXOQldcirB1fWYLr8SRF-3ZVpZliYVNcWp-hmqx4R"
+BOT_TOKEN = "8845906085:AAHE8H3NzPRcz13s7iNFno_MQ2C9bIrQ9mM"
+# بعد ما تجيب كود Adsgram حطه هنا
+ADSGRAM_BLOCK_ID = "YOUR_ADSGRAM_BLOCK_ID"
+A_ADS_ID = "YOUR_A-ADS_ID"
